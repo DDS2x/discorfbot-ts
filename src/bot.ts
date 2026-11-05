@@ -1,5 +1,8 @@
 import "dotenv/config";
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   ChannelType,
   Client,
   DiscordAPIError,
@@ -130,19 +133,43 @@ client.on(Events.MessageCreate, async (message) => {
     if (!result?.newCard) return;
 
     await gpu.syncRole(message.member, result.row).catch((e) => console.log("Не удалось выдать роль:", e.message));
-    // Приватно: в ЛС (ephemeral в обычном чате у ботов невозможен)
-    await message.author
-      .send(
-        `🎉 Ваша видеокарта была обновлена! Теперь у вас **${result.newCard.name}**.\n` +
-          `Состояние:\n${gpu.describeDefects(result.row)}`,
-      )
+    // Ephemeral без взаимодействия невозможен: в чат уходит нейтральное сообщение с кнопкой,
+    // а подробности показываются приватно только получателю при нажатии.
+    const button = new ButtonBuilder()
+      .setCustomId(`gpu-upgrade:${message.author.id}`)
+      .setLabel("Посмотреть")
+      .setStyle(ButtonStyle.Primary)
+      .setEmoji("🎮");
+    const notice = await message
+      .reply({
+        content: "🎉 Ваша видеокарта была обновлена! Нажмите кнопку, чтобы посмотреть (увидите только вы).",
+        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(button)],
+      })
       .catch(() => undefined);
+    if (notice) setTimeout(() => void notice.delete().catch(() => undefined), 2 * 60_000);
   } catch (e) {
     console.log("Ошибка начисления XP:", e);
   }
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  if (interaction.isButton() && interaction.customId.startsWith("gpu-upgrade:")) {
+    if (interaction.customId.split(":")[1] !== interaction.user.id) {
+      await interaction.reply({ content: "Эта кнопка не для вас 🙂", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const row = database.getGpu(interaction.user.id);
+    if (!row || !gpu.isBranch(row.branch)) return;
+    const tier = gpu.tierForXp(row.branch, row.xp);
+    await interaction.reply({
+      content:
+        `🎉 Теперь у вас **${gpu.BRANCHES[row.branch].cards[tier - 1]?.name ?? "встройка"}**!\n` +
+        `Состояние:\n${gpu.describeDefects(row)}`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === "my_status") {
